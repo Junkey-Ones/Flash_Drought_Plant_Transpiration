@@ -11,7 +11,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/fdwt/stages/m01_source_audit"))
 import audit
-from native import expected_hours, interval_amount, month_bounds, utc_times
+from native import check_month_hours, expected_hours, interval_amount, month_bounds, utc_times
+
+
+def test_terminal_context_requires_midnight_and_contiguous_hours():
+    start, stop = month_bounds(2024, 1)
+    hours = expected_hours(start, stop)
+    check_month_hours(hours[:1], start, stop, start)
+    check_month_hours(hours[:24], start, stop, start)
+    check_month_hours(hours, start, stop, start)
+    for invalid in (hours[1:24], hours[[0, 2]], hours[[0, 0]]):
+        with pytest.raises(ValueError):
+            check_month_hours(invalid, start, stop, start)
+    with pytest.raises(ValueError):
+        check_month_hours(hours[:24], start, stop)
 
 
 def test_leap_month_hours():

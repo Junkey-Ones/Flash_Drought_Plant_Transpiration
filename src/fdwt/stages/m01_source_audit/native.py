@@ -103,7 +103,16 @@ def sampled(variable):
     ]).compressed()
 
 
-def nc_metadata(path, product, stream, domain):
+def check_month_hours(stamps, start, stop, terminal_boundary=None):
+    """Require a complete month, or a contiguous prefix for terminal context."""
+    expected = expected_hours(start, stop)
+    if start == terminal_boundary:
+        expected = expected[:len(stamps)]
+    if not len(stamps) or not np.array_equal(stamps, expected):
+        raise ValueError("hourly coordinate differs from named month or terminal prefix")
+
+
+def nc_metadata(path, product, stream, domain, terminal_boundary=None):
     with Dataset(path) as ds:
         variables = ds.variables
         lat, lat_direction = axis(variables.get("latitude", variables.get("lat")))
@@ -139,8 +148,8 @@ def nc_metadata(path, product, stream, domain):
             if not match or match[1] != ("instant" if stream == "instant" else "accumulated"):
                 raise ValueError("unexpected ERA5-Land filename")
             start, stop = month_bounds(int(match[2]), int(match[3]))
-            if not np.array_equal(stamps, expected_hours(start, stop)):
-                raise ValueError("hourly coordinate differs from named month")
+            check_month_hours(stamps, start, stop,
+                              None if stream == "instant" else terminal_boundary)
             for name, unit in ERA[stream].items():
                 if fields.get(name, {}).get("units") != unit:
                     raise ValueError(f"{name}: missing variable or unexpected unit")

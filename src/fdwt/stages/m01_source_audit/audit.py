@@ -237,7 +237,7 @@ def product_code(product, stream):
     return stream if product == "modis" else product
 
 
-def inspect_file(task, domain, hash_only=False):
+def inspect_file(task, domain, hash_only=False, terminal_boundary=None):
     """Return file row and reader evidence. Invalid files remain in the inventory."""
     product, stream, path = task
     relative = path.relative_to(ROOT).as_posix()
@@ -252,7 +252,7 @@ def inspect_file(task, domain, hash_only=False):
         file_hash = fingerprint(path)
         if not hash_only:
             if path.suffix == ".nc":
-                meta = nc_metadata(path, product, stream, domain)
+                meta = nc_metadata(path, product, stream, domain, terminal_boundary)
             elif product == "modis":
                 meta = modis_metadata(path, stream)
             else:
@@ -290,12 +290,12 @@ def inspect_file(task, domain, hash_only=False):
     return row, meta
 
 
-def inspect_tasks(tasks, domain, workers, progress, hash_only=False):
+def inspect_tasks(tasks, domain, workers, progress, hash_only=False, terminal_boundary=None):
     """Bound the process queue and keep progress reporting in the parent."""
     if workers == 1:
         for task in tasks:
             progress.active = [task[2].name]
-            result = inspect_file(task, domain, hash_only)
+            result = inspect_file(task, domain, hash_only, terminal_boundary)
             progress.file(result)
             yield task, result
         return
@@ -308,7 +308,7 @@ def inspect_tasks(tasks, domain, workers, progress, hash_only=False):
                 task = next(queue, None)
                 if task is None:
                     break
-                pending[executor.submit(inspect_file, task, domain, hash_only)] = task
+                pending[executor.submit(inspect_file, task, domain, hash_only, terminal_boundary)] = task
             if not pending:
                 break
             progress.active = [task[2].name for task in pending.values()]
@@ -753,7 +753,10 @@ def main(argv=None):
         for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ[variable] = "1"
         reuse_existing = args.resume and target.exists()
-        records = sorted(inspect_tasks(tasks, domain, args.workers, progress, reuse_existing),
+        # Only the month beyond the frozen study period can be boundary context.
+        terminal_boundary = date(last_year + 1, 1, 1) if end == date(last_year, 12, 31) else None
+        records = sorted(inspect_tasks(tasks, domain, args.workers, progress, reuse_existing,
+                                       terminal_boundary),
                          key=lambda item: item[0])
         require(tasks == inventory(products, start, end), "raw inventory changed during audit")
         results = [item for _, item in records]
