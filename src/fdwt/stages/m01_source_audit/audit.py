@@ -1,18 +1,14 @@
-r"""M1 original-source audit for the frozen existing-data profile.
+r"""M1 · 原始数据审计
 
-Input: M0 run_config.json and verified completion bundle, plus read-only data_raw.
-Output: source_file_manifest.csv, source_variable_map.csv, station_metadata.csv,
-coverage, missing inputs, sample evidence and M2 release decisions. No daily tables.
-Default scope: all inventoried products within the frozen inclusive analysis years.
-From the repository root, replace RUN with the M0 run ID:
-  .venv\Scripts\python.exe src/fdwt/stages/m01_source_audit/audit.py --mode test --config metadata/runs/RUN/run_config.json --product era5_land --start 2004-02-01 --end 2004-03-02
-  .venv\Scripts\python.exe src/fdwt/stages/m01_source_audit/audit.py --mode production --config metadata/runs/RUN/run_config.json
-Test outputs: data/frozen/test__.../m01_source_audit and corresponding attempt paths.
-Exit codes: 0 passed, 1 audit failure or required scope blocked, 2 invalid preflight,
-130 interrupted.
+读取 M0 冻结配置，只读审计 data_raw，生成文件清单、变量映射、覆盖报告及 M2 放行判定。
+正式模式覆盖冻结年份及全部产品。试跑可限定产品和日期，两端均包含。
+从项目根目录运行，将 RUN 替换为实际 M0 运行编号：
+  .venv\Scripts\python.exe -B src/fdwt/stages/m01_source_audit/audit.py --mode test --config metadata/runs/RUN/run_config.json --product era5_land --start 2004-02-01 --end 2004-03-02 --dry-run
+  .venv\Scripts\python.exe -B src/fdwt/stages/m01_source_audit/audit.py --mode production --config metadata/runs/RUN/run_config.json
+预览通过后去掉 --dry-run 即可试跑。试跑交接位于 data/frozen/test__.../m01_source_audit。
+退出码：0 成功，1 审计失败或必需输入未放行，2 预检失败，130 中断。
 """
 
-import argparse
 from calendar import isleap
 from collections import Counter, defaultdict
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -41,8 +37,10 @@ ROOT = Path(__file__).resolve().parents[4]
 STAGE = "m01_source_audit"
 STAGE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(STAGE_DIR.parent / "m00_protocol"))
+sys.path.insert(0, str(ROOT / "workflow"))
 from contract import CONFIG_FILES, EXISTING_DATA_PROFILE, canonical, digest, parse, sources
 from freeze import environment, git
+from terminal_panel import ChineseHelp, ChineseParser, LiveStatus
 
 PRODUCTS = ("era5_land", "modis", "era5_single_levels", "esa_cci_sm",
             "gleam", "gosif", "aridity", "irrigation")
@@ -76,7 +74,7 @@ def require(condition, message):
 
 
 def safe(path):
-    """Refuse traversal and redirected paths, including NTFS junctions."""
+    """拒绝路径穿越及重定向，包括 NTFS 目录联接。"""
     require(path.is_relative_to(ROOT) and path.resolve() == path, f"unsafe path: {path}")
     return path
 
@@ -94,7 +92,7 @@ def utc_now():
 
 
 def available_memory():
-    """Return available physical memory, in bytes, on the target Windows host."""
+    """返回当前系统可用的物理内存，单位为字节。"""
     if os.name != "nt":
         return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
     status = (ctypes.c_uint64 * 8)()
@@ -105,7 +103,7 @@ def available_memory():
 
 
 def peak_memory():
-    """Return this process's peak resident bytes, as reported by Windows."""
+    """返回当前进程的常驻内存峰值，单位为字节。"""
     if os.name != "nt":
         import resource
         usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -121,7 +119,7 @@ def peak_memory():
 
 
 def load_m0(config, mode):
-    """Read the immutable M0 bundle and bind its registered scientific sources."""
+    """核对冻结的 M0 交接及协议来源。"""
     config = safe(Path(os.path.abspath(ROOT / config)))
     directory = config.parent
     require(directory.parent == ROOT / "metadata" / "runs" and config.name == "run_config.json",
@@ -159,8 +157,8 @@ def load_m0(config, mode):
     env = object_hash(environment())
     if mode == "production":
         require(env == identity["environment_hash"], "environment differs from approved M0")
-    code = {p.relative_to(ROOT).as_posix(): fingerprint(p)["sha256"]
-            for p in sorted(STAGE_DIR.glob("*.py"))}
+    paths = [*sorted(STAGE_DIR.glob("*.py")), ROOT / "workflow/terminal_panel.py"]
+    code = {p.relative_to(ROOT).as_posix(): fingerprint(p)["sha256"] for p in paths}
     for name, approved in identity["code_files"].items():
         source = safe(ROOT / name).read_bytes()
         code[name] = digest(source)
@@ -179,7 +177,7 @@ def load_m0(config, mode):
 
 
 def declared_date(path, product):
-    """Return filename date for inventory filtering. File readers verify native dates."""
+    """从文件名提取日期供清单筛选，原生日期由读取器核验。"""
     patterns = {
         "era5_land": (r"_(\d{4}_\d{2})\.nc$", "%Y_%m"),
         "era5_single_levels": (r"_(\d{4}_\d{2})\.nc$", "%Y_%m"),
@@ -200,7 +198,7 @@ def declared_date(path, product):
 
 
 def inventory(products, start, end):
-    """Enumerate raw inputs deterministically without following redirected paths."""
+    """按稳定顺序盘点原始输入，跳过重定向路径。"""
     result = []
     for product in products:
         root = safe(ROOT / "data_raw" / product)
@@ -238,7 +236,7 @@ def product_code(product, stream):
 
 
 def inspect_file(task, domain, hash_only=False, terminal_boundary=None):
-    """Return file row and reader evidence. Invalid files remain in the inventory."""
+    """返回文件记录和读取证据，无效文件仍保留在清单中。"""
     product, stream, path = task
     relative = path.relative_to(ROOT).as_posix()
     file_hash = {}
@@ -291,7 +289,7 @@ def inspect_file(task, domain, hash_only=False, terminal_boundary=None):
 
 
 def inspect_tasks(tasks, domain, workers, progress, hash_only=False, terminal_boundary=None):
-    """Bound the process queue and keep progress reporting in the parent."""
+    """限制并发队列大小，由父进程汇总进度。"""
     if workers == 1:
         for task in tasks:
             progress.active = [task[2].name]
@@ -313,7 +311,6 @@ def inspect_tasks(tasks, domain, workers, progress, hash_only=False, terminal_bo
                 break
             progress.active = [task[2].name for task in pending.values()]
             done, _ = wait(pending, timeout=0.3, return_when=FIRST_COMPLETED)
-            progress.show()
             for future in done:
                 task = pending.pop(future)
                 result = future.result()
@@ -324,14 +321,16 @@ def inspect_tasks(tasks, domain, workers, progress, hash_only=False, terminal_bo
 
 
 class Progress:
-    """Render aggregate progress and persist structured attempt events."""
+    """汇总展示审计进度并保存结构化运行日志。"""
 
     def __init__(self, args, run, attempt, total, logs):
         self.args, self.run, self.attempt, self.total, self.logs = args, run, attempt, total, logs
-        self.started, self.last = monotonic(), 0
+        self.started = monotonic()
         self.counts = Counter()
         self.active = []
-        self.ansi = args.progress == "auto" and sys.stderr.isatty() and os.getenv("TERM") != "dumb"
+        self.step = "正在准备读取原始文件"
+        self.context = ""
+        self.live = LiveStatus(args.progress, self.show)
 
     def event(self, event, message, level="INFO", **details):
         if self.logs:
@@ -352,34 +351,27 @@ class Progress:
             self.event("source_check", row["audit_note"] if failed else "; ".join(meta["warnings"]),
                        "ERROR" if failed else "WARNING", product=row["product_code"],
                        file=row["file_path"])
-        self.show()
-
-    def show(self, final=None):
-        now = monotonic()
-        if not final and now - self.last < (0.3 if self.ansi else 15):
-            return
-        self.last = now
-        done = self.counts["passed"] + self.counts["failed"]
-        elapsed = now - self.started
-        pct = done / max(self.total, 1)
-        eta = f"{elapsed / done * (self.total - done):.0f}s" if done else "--"
-        filled = int(pct * 16)
-        status = (f"M1 {self.args.mode} {self.args.product or 'all'} "
-                  f"[{'#' * filled}{'.' * (16 - filled)}] {pct:.0%} {done}/{self.total} files "
-                  f"ok={self.counts['passed']} skip=0 warn={self.counts['warning']} "
-                  f"fail={self.counts['failed']} elapsed={elapsed:.0f}s eta={eta}")
-        if final:
-            status += " " + final
+    def show(self):
+        """按实际返回的审计结果显示文件进度和当前处理槽位。"""
+        counts = self.counts.copy()
+        done = counts["passed"] + counts["failed"]
+        elapsed = monotonic() - self.started
+        fraction = done / max(self.total, 1)
+        detail = f"文件审计 {fraction:.0%}  |  已处理 {done}/{self.total} 份"
+        stats = f"通过 {counts['passed']}  |  跳过 0  |  警告 {counts['warning']}  |  失败 {counts['failed']}"
+        timing = f"已用 {elapsed:.0f} 秒"
+        if 0 < done < self.total and elapsed >= 1:
+            timing += f"  |  {done / elapsed:.1f} 份/秒  |  预计剩余 {(self.total-done)*elapsed/done:.0f} 秒"
+        slots = tuple(f"处理中 {i}：{name}" for i, name in enumerate(self.active, 1))
+        panel = self.live.panel
+        if panel.restore is not None:
+            panel.draw("M1 · 原始数据审计", self.context, f"当前操作：{self.step}",
+                       detail, stats, timing, fraction, slots=slots)
         else:
-            status += " " + ", ".join(self.active)
-        if self.ansi and not final:
-            width = shutil.get_terminal_size((100, 25)).columns
-            print("\r\x1b[2K" + status[:max(1, width - 1)], end="", file=sys.stderr, flush=True)
-        else:
-            print(("\r\x1b[2K" if self.ansi else "") + status, file=sys.stderr, flush=True)
+            panel.write(" | ".join(("M1 · 原始数据审计", self.context, self.step, detail, stats, timing, *slots)) + "\n")
 
 def write_csv(path, fields, rows):
-    """Serialize nullable scalars as blanks and compound fields as JSON."""
+    """可空标量缺失时留空，复合字段以 JSON 序列化。"""
     with path.open("x", encoding="utf-8", newline="") as output:
         writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
@@ -390,7 +382,7 @@ def write_csv(path, fields, rows):
 
 
 def contract_rows(registry, name, rows):
-    """Validate generated field types, non-null fields and uniqueness before writing."""
+    """写出前检查字段类型、必填值和主键唯一性。"""
     table = registry["tables"][name]
     fields = table["fields"]
     checks = {
@@ -474,7 +466,7 @@ def mapping_rows(records, evidence):
 
 
 def audit_coverage(records, products, start, end, domain, progress):
-    """Evaluate filename partitions and return scoped findings without gap filling."""
+    """按文件名分区检查范围，记录发现的问题和缺档。"""
     groups = defaultdict(list)
     partitions = defaultdict(list)
     missing = []
@@ -504,8 +496,9 @@ def audit_coverage(records, products, start, end, domain, progress):
 
     release = {}
     if "era5_land" in products:
-        progress.active = ["ERA5-Land cross-month evidence"]
-        progress.event("sample", "checking ERA5-Land cross-month evidence")
+        progress.active = []
+        progress.step = "正在核对 ERA5-Land 跨月累计量"
+        progress.event("sample", "正在核对 ERA5-Land 跨月累计量")
         months = list(covered_months(start, end))
         terminal = end + timedelta(days=1)
         for stream in ERA:
@@ -517,7 +510,7 @@ def audit_coverage(records, products, start, end, domain, progress):
                 choices = [month for month in [*months, prior]
                            if partitions.get(("era5_land", stream, month)) and
                            partitions.get(("era5_land", stream, month_bounds(month.year, month.month)[1]))]
-                # At most three deterministic boundaries. A dry sample may lack a reset signal.
+                # 按固定顺序最多检查三个边界，干燥样本可能没有累计量重置信号。
                 sample_errors = []
                 for month in choices[:3]:
                     next_month = month_bounds(month.year, month.month)[1]
@@ -633,7 +626,7 @@ def audit_coverage(records, products, start, end, domain, progress):
 
 
 def publish(work, target, manifest):
-    """Publish a complete directory by exclusive same-volume rename."""
+    """互斥锁内通过同卷重命名发布完整目录。"""
     members = {path.name: fingerprint(path) for path in sorted(work.iterdir())}
     marker = work / "m1_complete.json"
     with marker.open("xb") as output:
@@ -659,7 +652,7 @@ def publish(work, target, manifest):
 
 
 def reuse(target, identity, input_files):
-    """Revalidate a completed M1 publication before reusing it."""
+    """复用前重新核验 M1 已发布交接。"""
     manifest = read_json(safe(target / "m1_complete.json"))
     require(manifest["manifest_version"] == 1 and manifest["validation"] == "passed" and
             manifest["stage"] == STAGE and manifest["run_id"] == target.parent.name and
@@ -683,33 +676,37 @@ def check_m0_evidence(identity, results, production):
 
 
 def options(argv):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mode", required=True, choices=("test", "production"))
-    parser.add_argument("--config", required=True, type=Path, help="frozen M0 run_config.json")
-    parser.add_argument("--start", type=date.fromisoformat, help="inclusive YYYY-MM-DD; test only")
-    parser.add_argument("--end", type=date.fromisoformat, help="inclusive YYYY-MM-DD; test only")
-    parser.add_argument("--product", choices=PRODUCTS, help="limit to one product; test only")
-    parser.add_argument("--workers", type=int, default=1, help="worker processes, 1 to 4; default 1")
-    parser.add_argument("--progress", choices=("auto", "plain"), default="auto")
+    parser = ChineseParser(description=__doc__, formatter_class=ChineseHelp, add_help=False)
+    parser._optionals.title = "命令参数"
+    parser.add_argument("-h", "--help", action="help", help="查看中文帮助和试跑示例")
+    parser.add_argument("--mode", required=True, choices=("test", "production"),
+                        help="必填。test 为试跑，production 为正式运行")
+    parser.add_argument("--config", required=True, type=Path, help="M0 冻结的 run_config.json 路径")
+    parser.add_argument("--start", type=date.fromisoformat, help="仅试跑可用，起始日含当天（YYYY-MM-DD）")
+    parser.add_argument("--end", type=date.fromisoformat, help="仅试跑可用，结束日含当天（YYYY-MM-DD）")
+    parser.add_argument("--product", choices=PRODUCTS, help="仅试跑可限制为一种产品，默认审计全部产品")
+    parser.add_argument("--workers", type=int, default=1, help="并发进程数，1–4，默认 1，受可用 CPU 和内存限制")
+    parser.add_argument("--progress", choices=("auto", "plain"), default="auto",
+                        help="默认 auto，交互终端原地刷新；plain 逐行输出")
     modes = parser.add_mutually_exclusive_group()
-    modes.add_argument("--dry-run", action="store_true", help="list planned scope and paths without auditing")
-    modes.add_argument("--check-only", action="store_true", help="audit read-only, emit results to stdout")
-    modes.add_argument("--resume", action="store_true", help="validate and reuse an existing publication")
+    modes.add_argument("--dry-run", action="store_true", help="只预览审计范围和路径")
+    modes.add_argument("--check-only", action="store_true", help="执行只读审计；重定向标准输出可取得完整 JSON 报告")
+    modes.add_argument("--resume", action="store_true", help="校验并复用已发布交接，或另起一次尝试")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = options(argv)
     try:
-        require(1 <= args.workers <= min(4, os.cpu_count() or 1), "workers outside available range")
+        require(1 <= args.workers <= min(4, os.cpu_count() or 1), "并发数超出范围，请根据 CPU 数量选择 1–4")
         require(args.mode == "test" or not (args.start or args.end or args.product),
-                "production uses the complete frozen range and product inventory")
+                "正式运行使用完整冻结范围和产品清单，日期和产品限制仅用于试跑")
         params, registry, identity = load_m0(args.config, args.mode)
         first_year, last_year = params["time"]["periods"]["event"]
         start = args.start or date(first_year, 1, 1)
         end = args.end or date(last_year, 12, 31)
         require(date(first_year, 1, 1) <= start <= end <= date(last_year, 12, 31),
-                "invalid dates or outside frozen event range")
+                "起止日期无效或超出冻结事件期")
         domain = params["grid"]["domain"]
         products = (args.product,) if args.product else PRODUCTS
         identity.update(mode=args.mode, start=start.isoformat(), end=end.isoformat(), products=list(products))
@@ -720,52 +717,66 @@ def main(argv=None):
         work = safe(ROOT / "data" / "interim" / run / STAGE / attempt)
         logs = safe(ROOT / "logs" / run / STAGE / attempt)
         tasks = inventory(products, start, end)
-        require(tasks, "no matching source files")
+        require(tasks, "未找到所选产品和日期对应的原始文件")
         free = shutil.disk_usage(ROOT).free
         memory = available_memory()
-        # Conservative per-reader allowance for native libraries, chunks and Python.
+        # 为每个工作进程预留原生库、数据块和 Python 的内存。
         budget = (args.workers + int(args.workers > 1)) * 256 * 2**20
         if not (args.dry_run or args.check_only):
-            require(free >= max(128 * 2**20, len(tasks) * 16384), "insufficient disk for audit reports")
-            require(args.resume or not target.exists(), "published output exists; use --resume")
-        require(budget <= 0.6 * memory, "reduce workers: reader budget exceeds 60% of available memory")
+            require(free >= max(128 * 2**20, len(tasks) * 16384), "磁盘空间不足，无法保存审计报告")
+            require(args.resume or not target.exists(), "已有发布结果，可用 --resume 校验后复用")
+        require(budget <= 0.6 * memory, "读取预算超过可用内存的 60%，请调低 --workers")
         plan = dict(run_id=run, mode=args.mode, start=start.isoformat(), end=end.isoformat(),
                     products=list(products), files=len(tasks), workers=args.workers,
                     target=str(target), work=str(work), logs=str(logs), disk_free_bytes=free,
                     available_memory_bytes=memory, reader_budget_bytes=budget)
-        print(canonical(plan).decode().strip(), flush=True)
+        if not sys.stdout.isatty():
+            print(canonical(plan).decode().strip(), flush=True)
+        elif args.dry_run:
+            print(f"M1 · 原始数据审计 · 运行预览\n日期：{start} 至 {end}（含端点）")
+            print(f"产品：{', '.join(products)}  |  待审计 {len(tasks)} 份文件  |  {args.workers} 个工作进程")
+            print(f"预计交接目录：{target}\n预计日志：{logs / 'run.jsonl'}")
         if args.dry_run:
             return 0
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, yaml.YAMLError) as error:
-        print(f"M1 preflight: {error}", file=sys.stderr)
+        print(f"M1 · 运行前检查失败：{error}\n可用 --help 查看中文说明。", file=sys.stderr)
         return 2
 
     progress = Progress(args, run, attempt, len(tasks), None if args.check_only else logs)
+    mode = "试跑" if args.mode == "test" else "正式运行"
+    mode += " · 只读校验" if args.check_only else " · 续跑" if args.resume else ""
+    progress.context = f"{mode}  |  {args.product or '全部产品'}  |  {start} 至 {end}  |  {args.workers} 个工作进程"
     final = "failed"
+    error_note, check_result = None, None
     try:
         if not args.check_only:
             logs.mkdir(parents=True, exist_ok=False)
-        progress.event("started", "M1 raw source audit", scope=plan, identity=identity)
-        # Disable GDAL PAM sidecars in raw input directories and nested numeric threads.
+        progress.event("started", "开始原始数据审计", scope=plan, identity=identity)
+        progress.live.start()
+        # 禁用 GDAL 原始目录旁车文件及数值库嵌套线程。
         os.environ["GDAL_PAM_ENABLED"] = "NO"
         for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ[variable] = "1"
         reuse_existing = args.resume and target.exists()
-        # Only the month beyond the frozen study period can be boundary context.
+        progress.step = "正在复核原始文件校验值" if reuse_existing else "正在审计原始文件及变量"
+        # 仅允许冻结研究期末的次月文件用于累计边界。
         terminal_boundary = date(last_year + 1, 1, 1) if end == date(last_year, 12, 31) else None
         records = sorted(inspect_tasks(tasks, domain, args.workers, progress, reuse_existing,
                                        terminal_boundary),
                          key=lambda item: item[0])
-        require(tasks == inventory(products, start, end), "raw inventory changed during audit")
+        progress.active = []
+        progress.step = "正在核对原始文件清单"
+        require(tasks == inventory(products, start, end), "审计期间原始文件清单发生变化")
         results = [item for _, item in records]
         check_m0_evidence(identity, results, args.mode == "production")
         file_rows = [row for row, _ in results]
         input_files = [[row[key] for key in ("file_path", "file_size_bytes", "sha256")] for row in file_rows]
         if reuse_existing:
+            progress.step = "正在核对已发布交接"
             reuse(target, identity, input_files)
-            final = f"reused {target}"
+            final = "reused"
             return 0
         coverage, missing, release, evidence = audit_coverage(records, products, start, end, domain, progress)
         bad_required = any(row["required"] for row in missing)
@@ -775,9 +786,10 @@ def main(argv=None):
                       input_inventory_hash=object_hash(input_files),
                       missing_counts=dict(Counter(row["reason"] for row in missing)))
         if args.check_only:
-            print(canonical(dict(result, coverage=coverage, issues=missing)).decode().strip())
+            check_result = dict(result, coverage=coverage, issues=missing)
             final = "blocked" if blocked or any_failed else "checked"
             return int(blocked or any_failed)
+        progress.step = "正在写入审计表与放行判定"
         work.mkdir(parents=True, exist_ok=False)
         mapping = mapping_rows(records, evidence)
         for name, rows in (("source_file_manifest", file_rows), ("source_variable_map", mapping)):
@@ -790,27 +802,48 @@ def main(argv=None):
                   ("product", "stream", "partition", "reason", "required"), missing)
         (work / "m1_release.json").write_bytes(canonical(result))
         if blocked:
-            final = f"blocked reports={work}"
+            final = "blocked"
             progress.event("release_blocked", "required audit scope did not pass", "ERROR", result=result)
             return 1
+        progress.step = "正在验收并发布 M1 交接"
         publish(work, target, dict(manifest_version=1, stage=STAGE, run_id=run, attempt_id=attempt,
                                    identity=identity, release=release, schema_version=params["protocol"]["version"],
                                    input_inventory_hash=result["input_inventory_hash"]))
-        final = f"published {target}"
+        final = "published"
         return 0
     except KeyboardInterrupt:
         final = "interrupted"
         return 130
     except Exception as error:
         progress.event("exception", str(error), "ERROR", traceback=traceback.format_exc())
-        print(f"M1 audit: {error}", file=sys.stderr)
+        error_note = str(error)
         return 1
     finally:
+        progress.live.close()
         elapsed = monotonic() - progress.started
         progress.event("finished", final, counts=dict(progress.counts), elapsed_s=elapsed,
                        hash_mib_s=progress.counts["bytes"] / max(elapsed, 1e-9) / 2**20,
                        work=str(work), target=str(target), logs=str(logs))
-        progress.show(f"{final} logs={logs}" if not args.check_only else final)
+        labels = {"published": "完成，已发布审计结果", "reused": "完成，已复用审计结果",
+                  "checked": "完成，只读审计通过", "blocked": "审计未通过，交接未放行",
+                  "failed": "执行失败", "interrupted": "已中断"}
+        print(f"M1 · 原始数据审计 · {labels[final]}\n"
+              f"文件通过 {progress.counts['passed']}  |  警告 {progress.counts['warning']}"
+              f"  |  失败 {progress.counts['failed']}  |  用时 {elapsed:.1f} 秒", file=sys.stderr)
+        if error_note:
+            print(f"原因：{error_note}", file=sys.stderr)
+        if final in ("published", "reused"):
+            print(f"完成清单：{target / 'm1_complete.json'}\n审计表与放行报告：{target}", file=sys.stderr)
+        elif work.is_dir():
+            print(f"本次尝试保留在：{work}", file=sys.stderr)
+        if check_result is not None:
+            if sys.stdout.isatty():
+                print(f"覆盖记录 {len(check_result['coverage'])} 项，问题 {len(check_result['issues'])} 项。"
+                      "重定向标准输出可取得详细报告。", file=sys.stderr)
+            else:
+                print(canonical(check_result).decode().strip())
+        logfile = logs / "run.jsonl"
+        print(f"运行日志：{logfile}" if logfile.is_file() else "运行日志：本次未写入日志文件", file=sys.stderr)
 
 
 if __name__ == "__main__":
