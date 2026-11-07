@@ -2,7 +2,9 @@
 
 此目录用于实现阶段依赖、运行入口、续跑和产物发布。科学计算代码放入 `src/fdwt/stages/`。入口及发布规则见[文件操作与存放规范](../docs/file_operations.md)。
 
-M1 和 M2 可用 `--help` 查看中文命令示例。支持 ANSI 的交互终端默认原地刷新面板，运行结束后保留结果、报告和日志路径。重定向输出时使用纯文本进度，标准输出保留 JSON 计划。`--progress plain` 可手动切换为纯文本。后续阶段见 [M3–M10 运行说明](downstream.md)。
+M1 和 M2 可用 `--help` 查看中文命令示例。建议在 Windows Terminal 直接运行并加 `--progress panel`，以 Rich Live 显示固定边框、进度条和并发槽位。结果、报告和日志路径在面板退出后保留在终端。面板写到标准错误，只重定向标准输出时仍可显示。
+
+`auto` 是默认模式。显示流没有交互终端时，只输出结束摘要，标准输出重定向仍可获得 JSON 计划。显式使用 `--progress plain` 才会逐行报告进度。`--progress panel` 遇到不支持光标更新的输出窗口会在执行前报错。后续阶段见 [M3–M10 运行说明](downstream.md)。
 
 ## M1 原始数据审计
 
@@ -13,7 +15,7 @@ $m0 = 'metadata/runs/v1.3.1__ee0d9fb46eb2__561932e2cedf__seed_13120261102/run_co
 $python = '.\.venv\Scripts\python.exe'
 $audit = 'src/fdwt/stages/m01_source_audit/audit.py'
 & $python -B $audit --mode test --config $m0 --product era5_land --start 2023-12-27 --end 2023-12-31 --workers 2 --dry-run
-& $python -B $audit --mode test --config $m0 --product era5_land --start 2023-12-27 --end 2023-12-31 --workers 2
+& $python -B $audit --mode test --config $m0 --product era5_land --start 2023-12-27 --end 2023-12-31 --workers 2 --progress panel
 & $python -B $audit --mode production --config $m0 --workers 2
 ```
 
@@ -29,9 +31,9 @@ $audit = 'src/fdwt/stages/m01_source_audit/audit.py'
 
 ```powershell
 $m2 = 'src/fdwt/stages/m02_preprocess/preprocess.py'
-$m1test = 'data/frozen/test__v1.3.1__ee0d9fb46eb2__561932e2cedf__seed_13120261102__m1_0dd6edb1e7d4/m01_source_audit/m1_complete.json'
+$m1test = 'data/frozen/test__v1.3.1__ee0d9fb46eb2__561932e2cedf__seed_13120261102__m1_65d8270f3c94/m01_source_audit/m1_complete.json'
 & $python -B $m2 --mode test --config $m0 --m1 $m1test --start 2023-12-27 --end 2023-12-31 --dry-run
-& $python -B $m2 --mode test --config $m0 --m1 $m1test --start 2023-12-27 --end 2023-12-31
+& $python -B $m2 --mode test --config $m0 --m1 $m1test --start 2023-12-27 --end 2023-12-31 --progress panel
 # 正式放行后才执行
 & $python -B $m2 --mode production --config $m0
 ```
@@ -54,3 +56,5 @@ M2 面板按已写出的候计数，只读校验和复用交接时按已校验�
 用 Windows 伪终端运行 ERA5-Land 2023-12-27 至 2023-12-31 的试跑。M1 使用两个工作进程，六份文件通过，耗时约 5.6 秒，单进程峰值约 266 MiB。M2 处理一候和 13,741 个格点，交接四张表共 96,188 行，耗时约 1.9 秒，峰值约 250 MiB，交接文件约 3.03 MiB。
 
 两阶段均验证了原地刷新、中文帮助、参数错误、运行预览、只读检查和纯文本续跑。M1 输入清单哈希及放行判定与改造前一致，M2 四张表的数据逐表一致。全仓 39 项测试通过。验证范围为试跑，正式全量运行尚未执行。
+
+改用 Rich Live 后，用同一真实范围在 Windows ConPTY 重验。M1 的双并发槽位在同一边框内更新，M2 在标准输出进入管道时仍显示边框和进度，管道只收到 JSON 计划。两阶段结束后均清除面板并保留结果和日志路径。

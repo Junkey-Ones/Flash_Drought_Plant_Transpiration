@@ -15,7 +15,6 @@ import re
 import shutil
 import subprocess
 import sys
-from threading import Event, Thread
 from time import monotonic
 import traceback
 from uuid import uuid4
@@ -28,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 for path in (ROOT / "src", ROOT / "src/fdwt/stages/m02_preprocess"):
     sys.path.insert(0, str(path))
 from preprocess import ARTIFACTS, fingerprint, m1, make_table, schema_for
-from terminal_panel import ChineseHelp, ChineseParser, TerminalPanel
+from terminal_panel import ChineseHelp, ChineseParser, LiveStatus, validate_progress
 
 STAGES = dict(enumerate(("m01_source_audit", "m02_preprocess", "m03_support_climatology",
                          "m04_event_catalog", "m05_recovery_precip", "m06_exposure",
@@ -60,36 +59,17 @@ class StageProgress:
         elif args.resume:
             mode += " · 续跑"
         self.context = f"{mode}  |  ERA5-Land  |  {' 至 '.join(plan['dates'])}"
-        interactive = args.progress == "auto" and sys.stdout.isatty() and sys.stderr.isatty()
-        self.panel = TerminalPanel(sys.stderr, interactive)
+        self.live = LiveStatus(args.progress, self.show)
+        self.panel = self.live.panel
         self.started = monotonic()
-        self.stop = Event()
-        self.thread = Thread(target=self.refresh, daemon=True)
         self.state = (0, "准备校验输入", None, None, "", self.started)
 
     def __enter__(self):
-        self.panel.__enter__()
-        try:
-            self.show()
-            self.thread.start()
-        except BaseException:
-            self.__exit__(None, None, None)
-            raise
+        self.live.start()
         return self
 
     def __exit__(self, *_):
-        self.stop.set()
-        try:
-            if self.thread.ident is not None:
-                self.thread.join()
-        finally:
-            self.panel.__exit__(None, None, None)
-
-    def refresh(self):
-        """长时间读取或计算时仍更新耗时，由主线程处理 Ctrl+C。"""
-        interval = 0.25 if self.panel.restore is not None else 15
-        while not self.stop.wait(interval):
-            self.show()
+        self.live.close()
 
     def active(self, step, completed=None, total=None, unit=""):
         """报告当前操作，并可附带实际处理量和计量单位。"""
@@ -101,7 +81,7 @@ class StageProgress:
     def advance(self, step):
         """标记当前步骤已完成，开始显示下一步。"""
         self.state = (self.state[0] + 1, step, None, None, "", monotonic())
-        if self.panel.restore is None and self.state[0] < self.total:
+        if self.live.mode == "plain" and self.state[0] < self.total:
             self.show()
 
     def event(self, name, message, level="INFO", **details):
@@ -168,14 +148,15 @@ def options(argv, stage=None):
     modes.add_argument("--dry-run", action="store_true", help="只读元数据并显示计划")
     modes.add_argument("--check-only", action="store_true", help="只读核对上游文件校验值")
     parser.add_argument("--resume", action="store_true", help="核对身份和文件后复用已发布交接")
-    parser.add_argument("--progress", choices=("auto", "plain"), default="auto",
-                        help="默认 auto，交互终端原地刷新。plain 逐行输出，适合重定向")
+    parser.add_argument("--progress", choices=("auto", "panel", "plain"), default="auto",
+                        help="auto 自动启用面板；panel 要求交互终端；plain 逐行输出")
     args = parser.parse_args(argv)
     args.stage = int(args.stage[1:]) if stage is None else stage
     if not 1 <= args.chunk_cells <= 128:
         parser.error("--chunk-cells 必须介于 1 和 128 之间")
     if args.max_cells is not None and (args.mode != "test" or args.stage != 3 or args.max_cells < 1):
         parser.error("--max-cells 仅用于 M3 的 test 模式，必须是正整数")
+    validate_progress(parser, args)
     return args
 
 

@@ -32,7 +32,7 @@ from fdwt.stages.m08_route2.route2 import EXIT, follow
 
 
 def test_terminal_panel_repaints_and_restores_on_interrupt(monkeypatch):
-    """面板用同一组光标坐标刷新，且中断时退出独立缓冲区并恢复光标。"""
+    """Rich 面板复用同一区域，且中断时清除面板并恢复光标。"""
     class Capture(StringIO):
         def fileno(self):
             return 2
@@ -46,10 +46,30 @@ def test_terminal_panel_repaints_and_restores_on_interrupt(monkeypatch):
         panel.draw("M3 · 气候态", "试跑", "正在计算格点", "已完成 1 步", "成功 1", "已用 2 秒", 1/3, .5)
         raise KeyboardInterrupt
     screen = stream.getvalue()
-    assert screen.startswith(terminal_panel.ENTER)
-    assert screen.count("\x1b[1;1H") == 2 and "\n" not in screen
-    assert "正在读取候表" in screen and "正在计算格点" in screen and "\x1b[42m" in screen
-    assert screen.endswith(terminal_panel.LEAVE) and restored == [True]
+    assert "\x1b[?25l" in screen and "\x1b[?25h" in screen
+    assert "\x1b[1A" in screen and "正在读取候表" in screen and "正在计算格点" in screen
+    assert "╭" in screen and "气候态" in screen and restored == [True]
+
+
+def test_live_status_uses_display_stream_and_keeps_capture_quiet(monkeypatch):
+    """标准输出管道不会关闭面板。没有交互终端时，自动模式不刷进度行。"""
+    class Display(StringIO):
+        def isatty(self):
+            return True
+
+    renders = []
+    monkeypatch.setattr(terminal_panel.sys, "stdout", StringIO())
+    monkeypatch.setattr(terminal_panel.sys, "stderr", Display())
+    monkeypatch.setattr(terminal_panel, "enable_vt", lambda _: lambda: None)
+    status = terminal_panel.LiveStatus("auto", lambda: renders.append("面板"))
+    status.start()
+    status.close()
+    assert renders == ["面板"]
+    monkeypatch.setattr(terminal_panel.sys, "stderr", StringIO())
+    status = terminal_panel.LiveStatus("auto", lambda: renders.append("逐行"))
+    status.start()
+    status.close()
+    assert renders == ["面板"]
 
 
 @pytest.fixture

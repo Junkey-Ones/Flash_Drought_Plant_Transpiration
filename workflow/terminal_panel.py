@@ -7,11 +7,7 @@ import argparse
 import os
 import sys
 from threading import Event, Thread
-import unicodedata
-
-
-ENTER = "\x1b[?1049h\x1b[?25l\x1b[2J"
-LEAVE = "\x1b[0m\x1b[?1049l\x1b[?25h"
+from importlib import import_module
 
 
 def enable_vt(stream):
@@ -38,28 +34,13 @@ def enable_vt(stream):
     return lambda: console.SetConsoleMode(handle, previous.value)
 
 
-def fit(text, width):
-    """按终端列宽截断并补齐文本，汉字占两列，去除输入中的控制字符。"""
-    chars, columns = [], 0
-    for char in str(text):
-        if unicodedata.category(char).startswith("C"):
-            char = " "
-        size = 0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in ("F", "W") else 1
-        if columns + size > width:
-            break
-        chars.append(char)
-        columns += size
-    return "".join(chars) + " " * (width - columns)
-
-
 class TerminalPanel:
-    """在独立屏幕缓冲区绘制固定位置的面板，退出后恢复原终端。"""
+    """用 Rich Live 在当前命令下方维护一块固定的交互区域。"""
 
     def __init__(self, stream, interactive):
         self.stream = stream
         self.interactive = interactive
-        self.restore = None
-        self.height = 0
+        self.restore = self.live = None
 
     def write(self, text):
         self.stream.write(text)
@@ -67,63 +48,87 @@ class TerminalPanel:
 
     def __enter__(self):
         if self.interactive:
+            self.restore = terminal_restore(self.stream)
+        if self.restore is None:
+            return self
+        try:
             try:
-                self.restore = enable_vt(self.stream)
-            except (OSError, ValueError):
-                self.restore = None
-        if self.restore is not None:
-            try:
-                self.write(ENTER)
-            except BaseException:
-                self.__exit__(None, None, None)
-                raise
+                from rich.console import Console
+                from rich.live import Live
+                self.backend = "rich"
+            except ModuleNotFoundError as error:
+                if error.name != "rich":
+                    raise
+                from pip._vendor.rich.console import Console
+                from pip._vendor.rich.live import Live
+                self.backend = "pip._vendor.rich"
+            # 以已通过的 Windows VT 探测为准，避免 ConPTY 的 TERM=dumb 误导 Rich。
+            environ = dict(os.environ)
+            if os.name == "nt" and environ.get("TERM") in ("dumb", "unknown"):
+                environ["TERM"] = "xterm"
+            console = Console(file=self.stream, force_terminal=True, force_interactive=True,
+                              color_system="standard", legacy_windows=False, _environ=environ)
+            self.live = Live(console=console, auto_refresh=False, transient=True,
+                             redirect_stdout=False, redirect_stderr=False)
+            self.live.start()
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *_):
-        if self.restore is not None:
-            try:
-                self.write(LEAVE)
-            finally:
+        try:
+            if self.live is not None:
+                self.live.stop()
+                self.live = None
+        finally:
+            if self.restore is not None:
                 self.restore()
                 self.restore = None
 
     def draw(self, title, context, step, detail, statistics, elapsed, fraction, task=None, *, slots=()):
-        """在原位置更新中文状态和背景填充的进度条，避免写入最后一列。"""
-        try:
-            columns, rows = os.get_terminal_size(self.stream.fileno())
-        except OSError:
-            columns, rows = 80, 24
-        width = max(0, min(columns - 1, 100))
-        lines = [title, context, step, detail, statistics, elapsed, "按 Ctrl+C 安全中断"]
-        bars_height = 10 + int(task is not None)
-        if width >= 30 and rows >= bars_height:
-            lines[3:3] = slots[:rows - bars_height]
-            inner = width - 4
-            lines = [f"│ {fit(line, inner)} │" for line in lines]
-            bars = [fraction] if task is None else [fraction, task]
-            for index, ratio in enumerate(bars):
-                label = "流程 " if index == 0 else "任务 "
-                span = inner - 5
-                filled = round(span * ratio)
-                bar = label + "\x1b[42m" + " " * filled + "\x1b[100m" + " " * (span - filled) + "\x1b[0m"
-                lines.insert(3 + min(len(slots), rows - bars_height) + index, f"│ {bar} │")
-            lines = ["┌" + "─" * (width - 2) + "┐", *lines,
-                     "└" + "─" * (width - 2) + "┘"]
-        else:
-            lines = [fit(line, width) for line in lines[:rows]]
-        # 用绝对光标位置覆盖原面板，并清除终端尺寸变化后多余的行。
-        screen = "".join(f"\x1b[{i};1H\x1b[2K{line}" for i, line in enumerate(lines, 1))
-        if self.height > len(lines):
-            screen += f"\x1b[{len(lines) + 1};1H\x1b[J"
-        self.height = len(lines)
-        self.write(screen)
+        """交给 Rich 排版中文、边框及进度条，超宽文本按终端宽度折行。"""
+        def component(module, name):
+            return getattr(import_module(f"{self.backend}.{module}"), name)
+
+        Group = component("console", "Group")
+        Panel = component("panel", "Panel")
+        ProgressBar = component("progress_bar", "ProgressBar")
+        Text = component("text", "Text")
+
+        body = [Text(context, style="dim"), Text(step, style="bold"), *(Text(slot) for slot in slots),
+                Text(detail), ProgressBar(total=1, completed=fraction, width=None)]
+        if task is not None:
+            body.extend((Text("当前任务", style="dim"), ProgressBar(total=1, completed=task, width=None)))
+        body.extend((Text(statistics), Text(elapsed, style="dim")))
+        self.live.update(Panel(Group(*body), title=Text(title, style="bold cyan"),
+                               title_align="left", border_style="cyan",
+                               subtitle=Text("Ctrl+C 安全中断", style="dim")), refresh=True)
+
+
+def terminal_restore(stream):
+    """探测显示流是否支持光标更新，返回原终端模式的恢复操作。"""
+    try:
+        return enable_vt(stream)
+    except (OSError, ValueError):
+        return None
+
+
+def validate_progress(parser, args):
+    """显式要求面板时，在读写业务数据前拒绝不支持的输出环境。"""
+    if args.progress == "panel" and not args.dry_run:
+        restore = terminal_restore(sys.stderr)
+        if restore is None:
+            parser.error("当前标准错误未连接到支持光标更新的终端。请在 Windows Terminal 中直接运行，或使用 --progress plain")
+        restore()
 
 
 class LiveStatus:
     """为阻塞式读取定时刷新，由入口更新状态并处理退出。"""
 
     def __init__(self, mode, render):
-        interactive = mode == "auto" and sys.stdout.isatty() and sys.stderr.isatty()
+        self.mode = mode
+        interactive = mode != "plain" and sys.stderr.isatty()
         self.panel = TerminalPanel(sys.stderr, interactive)
         self.render = render
         self.stop = Event()
@@ -132,8 +137,9 @@ class LiveStatus:
     def start(self):
         self.panel.__enter__()
         try:
-            self.render()
-            self.thread.start()
+            if self.mode == "plain" or self.panel.restore is not None:
+                self.render()
+                self.thread.start()
         except BaseException:
             self.close()
             raise

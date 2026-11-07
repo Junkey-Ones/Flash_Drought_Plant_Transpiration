@@ -26,7 +26,7 @@ import pyarrow.parquet as pq
 import yaml
 
 from inputs import MonthlyReader, fingerprint, load_sources, m1, member_hashes
-from terminal_panel import ChineseHelp, ChineseParser, LiveStatus
+from terminal_panel import ChineseHelp, ChineseParser, LiveStatus, validate_progress
 from physics import (DAY, FLUX, STATE, VALUES, calendar_rows, cell_area_km2,
                      identity_support, pentad_flux, pentad_state)
 
@@ -66,10 +66,12 @@ def options(argv):
     checks = parser.add_mutually_exclusive_group()
     checks.add_argument("--dry-run", action="store_true", help="只预览输入范围、完整候和目标路径")
     checks.add_argument("--check-only", action="store_true", help="只读核对上游清单和原始文件校验值")
-    parser.add_argument("--progress", choices=("auto", "plain"), default="auto",
-                        help="默认 auto，交互终端原地刷新；plain 逐行输出")
+    parser.add_argument("--progress", choices=("auto", "panel", "plain"), default="auto",
+                        help="auto 自动启用面板；panel 要求交互终端；plain 逐行输出")
     parser.add_argument("--resume", action="store_true", help="校验并复用已发布交接，或另起一次尝试")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    validate_progress(parser, args)
+    return args
 
 
 def code_identity(m0, mode):

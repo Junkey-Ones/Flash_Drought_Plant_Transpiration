@@ -25,11 +25,11 @@ M6 的 MODIS 测试清单可与 M2 的 ERA5-Land 测试审计分开生成，二�
 $env:PYTHONIOENCODING = 'utf-8'
 $python = '.\.venv\Scripts\python.exe'
 $m0 = 'metadata/runs/v1.3.1__ee0d9fb46eb2__561932e2cedf__seed_13120261102/run_config.json'
-$m2 = 'data/frozen/test__v1.3.1__ee0d9fb46eb2__561932e2cedf__seed_13120261102__m2_14e17da78457/m02_preprocess/m2_complete.json'
+$m2 = 'data/frozen/test__v1.3.1__ee0d9fb46eb2__561932e2cedf__seed_13120261102__m2_b6878bfaee3a/m02_preprocess/m2_complete.json'
 $m3 = 'src/fdwt/stages/m03_support_climatology/run.py'
 & $python -B $m3 --help
 & $python -B $m3 --mode test --config $m0 --input $m2 --max-cells 3 --dry-run
-& $python -B $m3 --mode test --config $m0 --input $m2 --max-cells 3
+& $python -B $m3 --mode test --config $m0 --input $m2 --max-cells 3 --progress panel
 # 正式阶段须通过准备验收，使用与参与代码、环境一致的新冻结配置。
 & $python -B $m3 --mode production --config $m0 --dry-run
 ~~~
@@ -38,11 +38,11 @@ $m3 = 'src/fdwt/stages/m03_support_climatology/run.py'
 
 ## 终端面板和运行结果
 
-在 Windows Terminal 或支持 ANSI 的交互终端直接运行命令，默认使用 `--progress auto`。中文标题下方显示模式、产品和日期。流程进度按校验输入、执行阶段、验收发布计数。上游校验和格点处理等任务有实际总量时，另显示任务进度和计数。有足够计时样本时显示当前任务的处理速度和预计剩余时间。可用 Ctrl+C 安全中断。
+在 Windows Terminal 或支持 ANSI 的交互终端直接运行命令。默认 `--progress auto` 会选择 Rich Live，`--progress panel` 可要求必须显示面板。中文标题下方显示模式、产品和日期。流程进度按校验输入、执行阶段、验收发布计数。上游校验和格点处理等任务有实际总量时，另显示任务进度和计数。有足够计时样本时显示当前任务的处理速度和预计剩余时间。可用 Ctrl+C 安全中断。
 
 结束后，终端恢复普通显示并保留摘要。完成或复用时列出完成清单、交接表行数、结果目录和实际的 `run.jsonl` 路径。失败时列出原因和已创建的尝试目录。`--check-only` 只读校验，`--dry-run` 只预览范围和预计路径。
 
-显式使用 `--progress plain`、重定向输出或终端不支持 ANSI 时，进度按流程切换和时间间隔逐行写到标准错误。标准输出被重定向时保留原有的 JSON 运行计划，供自动化读取。
+面板使用标准错误，只重定向标准输出时仍可原地刷新，标准输出保留 JSON 运行计划。若标准错误也被捕获或不支持 ANSI，自动模式只留下结束摘要，显式面板模式会报告原因。`--progress plain` 用于需要逐行进度的批处理。项目当前环境使用锁定的 pip 自带 Rich，无需运行期间联网安装。
 
 ## 已实现范围和待验收内容
 

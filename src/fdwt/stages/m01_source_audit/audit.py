@@ -40,7 +40,7 @@ sys.path.insert(0, str(STAGE_DIR.parent / "m00_protocol"))
 sys.path.insert(0, str(ROOT / "workflow"))
 from contract import CONFIG_FILES, EXISTING_DATA_PROFILE, canonical, digest, parse, sources
 from freeze import environment, git
-from terminal_panel import ChineseHelp, ChineseParser, LiveStatus
+from terminal_panel import ChineseHelp, ChineseParser, LiveStatus, validate_progress
 
 PRODUCTS = ("era5_land", "modis", "era5_single_levels", "esa_cci_sm",
             "gleam", "gosif", "aridity", "irrigation")
@@ -686,13 +686,15 @@ def options(argv):
     parser.add_argument("--end", type=date.fromisoformat, help="仅试跑可用，结束日含当天（YYYY-MM-DD）")
     parser.add_argument("--product", choices=PRODUCTS, help="仅试跑可限制为一种产品，默认审计全部产品")
     parser.add_argument("--workers", type=int, default=1, help="并发进程数，1–4，默认 1，受可用 CPU 和内存限制")
-    parser.add_argument("--progress", choices=("auto", "plain"), default="auto",
-                        help="默认 auto，交互终端原地刷新；plain 逐行输出")
+    parser.add_argument("--progress", choices=("auto", "panel", "plain"), default="auto",
+                        help="auto 自动启用面板；panel 要求交互终端；plain 逐行输出")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--dry-run", action="store_true", help="只预览审计范围和路径")
     modes.add_argument("--check-only", action="store_true", help="执行只读审计；重定向标准输出可取得完整 JSON 报告")
     modes.add_argument("--resume", action="store_true", help="校验并复用已发布交接，或另起一次尝试")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    validate_progress(parser, args)
+    return args
 
 
 def main(argv=None):
