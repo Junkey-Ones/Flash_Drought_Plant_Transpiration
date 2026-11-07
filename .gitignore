@@ -1,15 +1,57 @@
-# Project-local Python environment; recreate with setup_environment.ps1.
-.venv/
+# Local data, generated artifacts and runtime logs
+/data_raw/
+/data_processed/
+/data/
+/metadata/*
+!/metadata/README.md
+/outputs/
+/logs/
 
-# Raw source datasets are kept locally and are too large for Git.
-data_raw/
-data_processed/
-# Python bytecode and local test caches.
+# Data files and archives outside the standard data directories
+*.csv
+*.tsv
+*.jsonl
+*.parquet
+*.feather
+*.nc
+*.nc4
+*.grib*
+*.hdf*
+*.h5
+*.tif
+*.tiff
+*.gpkg
+*.geojson
+*.shp
+*.shx
+*.dbf
+*.zarr/
+*.npy
+*.npz
+*.zip
+*.gz
+*.7z
+*.log
+
+# Local configuration and credentials
+/.env
+/.env.*
+!/.env.example
+/config/*
+!/config/README.md
+.cdsapirc
+.netrc
+_netrc
+*.pem
+*.key
+
+# Python environments and caches
+/.venv/
 __pycache__/
 *.py[cod]
-
-# Windows Explorer metadata.
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+*.egg-info/
 desktop.ini
-
-# Local structure-check reports and runtime logs.
-logs/datacheck*/
