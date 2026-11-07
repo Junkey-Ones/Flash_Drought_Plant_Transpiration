@@ -1,0 +1,5 @@
+# Readers used by check_structure.py
+xarray>=2024.10
+netCDF4>=1.6
+rasterio>=1.3
+pyhdf>=0.11

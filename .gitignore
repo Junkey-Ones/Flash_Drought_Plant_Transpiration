@@ -1,0 +1,15 @@
+# Project-local Python environment; recreate with setup_environment.ps1.
+.venv/
+
+# Raw source datasets are kept locally and are too large for Git.
+data_raw/
+data_processed/
+# Python bytecode and local test caches.
+__pycache__/
+*.py[cod]
+
+# Windows Explorer metadata.
+desktop.ini
+
+# Local structure-check reports and runtime logs.
+logs/datacheck*/
