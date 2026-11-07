@@ -121,7 +121,7 @@ def prepare(args):
     if params["random"].get("status") != "frozen" or any(
             item.get("status") != "frozen" for item in (schema, matrix)):
         blockers.append("seed, schema or matrix still marked as candidate")
-    tracked = ("src", "workflow", "docs/protocol_sources.md")
+    tracked = (*code, "docs/protocol_sources.md")
     if git("status", "--porcelain", "--untracked-files=all", "--", *tracked):
         blockers.append("participating code or protocol registration is not fixed in Git")
     base = f"{VERSION}__{config_hashes['params.yaml'][:12]}__{code_hash[:12]}__{identity['seed_id']}"
