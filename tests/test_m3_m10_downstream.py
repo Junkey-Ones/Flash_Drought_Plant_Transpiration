@@ -9,6 +9,7 @@ from datetime import date
 from io import StringIO
 import json
 from pathlib import Path
+import shlex
 import sys
 
 import numpy as np
@@ -29,6 +30,23 @@ from fdwt.stages.m05_recovery_precip.recovery import MASTER, classify, evaluate,
 from fdwt.stages.m06_exposure.exposure import lai_mask, trailing
 from fdwt.stages.m07_route1.route1 import holm, risk_rows
 from fdwt.stages.m08_route2.route2 import EXIT, follow
+
+
+def test_handover_commands_require_terminal_panel():
+    """逐阶段检查交接命令，防止交互示例再次关闭面板。"""
+    handover = ROOT / "docs/run_handover.md"
+    if not handover.is_file():
+        pytest.skip("本地交接任务书未提供")
+    lines = handover.read_text(encoding="utf-8").splitlines()
+    for stage in range(3, 11):
+        entry = f"src/fdwt/stages/{flow.STAGES[stage]}/run.py"
+        commands = [shlex.split(line) for line in lines
+                    if line.lstrip().startswith("& ") and entry in line and "--mode production" in line]
+        assert commands, f"M{stage} 缺少正式交接命令"
+        for args in commands:
+            assert args.count("--progress") == 1, f"M{stage} 应显式指定一次显示模式"
+            option = args.index("--progress") + 1
+            assert args[option:option + 1] == ["panel"], f"M{stage} 的正式交接命令应使用 --progress panel"
 
 
 def test_terminal_panel_repaints_and_restores_on_interrupt(monkeypatch):

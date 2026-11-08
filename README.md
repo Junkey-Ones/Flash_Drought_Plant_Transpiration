@@ -7,6 +7,7 @@
 - [文件操作与存放规范](docs/file_operations.md)
 - [项目脚本开发规范](docs/script_development.md)
 - [准备阶段验收](docs/preparation_readiness.md)
+- [M0–M10 托孤任务书](docs/run_handover.md)
 - [FD-WT v1.3.1 协议来源登记](docs/protocol_sources.md)
 - [AI 接手规则](AGENTS.md)
 
